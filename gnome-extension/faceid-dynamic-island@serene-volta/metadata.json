@@ -1,0 +1,8 @@
+{
+  "uuid": "faceid-dynamic-island@serene-volta",
+  "name": "Face ID Dynamic Island HUD",
+  "description": "Renders an iPhone-style Dynamic Island Face ID authentication pill on the GNOME Lock Screen and desktop.",
+  "shell-version": ["47", "48", "49", "50", "51"],
+  "session-modes": ["user", "unlock-dialog"],
+  "version": 1
+}

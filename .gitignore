@@ -1,0 +1,22 @@
+# Compiled PAM & SELinux artifacts
+*.so
+*.o
+*.mod
+*.pp
+*.shell-extension.zip
+
+# Downloaded ONNX neural weights (fetched automatically by install-faceid.sh)
+models/*.onnx
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# User profiles & runtime sockets
+users/*.json
+*.sock
+state.json
+preview.jpg

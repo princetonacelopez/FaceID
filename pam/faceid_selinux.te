@@ -1,0 +1,37 @@
+module faceid_selinux 1.1;
+
+require {
+    type xdm_t;
+    type policykit_auth_t;
+    type local_login_t;
+    type chkpwd_t;
+    type unconfined_service_t;
+    type unconfined_t;
+    type var_run_t;
+    type user_tmp_t;
+    class dir { search getattr open read };
+    class sock_file { write getattr open read append };
+    class unix_stream_socket connectto;
+}
+
+# Allow GDM / GNOME Lock Screen (xdm_t) to talk to faceid-daemon socket
+allow xdm_t var_run_t:dir { search getattr open read };
+allow xdm_t var_run_t:sock_file { write getattr open read append };
+allow xdm_t unconfined_service_t:unix_stream_socket connectto;
+
+allow xdm_t user_tmp_t:dir { search getattr open read };
+allow xdm_t user_tmp_t:sock_file { write getattr open read append };
+allow xdm_t unconfined_t:unix_stream_socket connectto;
+
+# Allow Polkit, local login, and chkpwd to talk to faceid-daemon socket
+allow policykit_auth_t var_run_t:dir { search getattr open read };
+allow policykit_auth_t var_run_t:sock_file { write getattr open read append };
+allow policykit_auth_t unconfined_service_t:unix_stream_socket connectto;
+
+allow local_login_t var_run_t:dir { search getattr open read };
+allow local_login_t var_run_t:sock_file { write getattr open read append };
+allow local_login_t unconfined_service_t:unix_stream_socket connectto;
+
+allow chkpwd_t var_run_t:dir { search getattr open read };
+allow chkpwd_t var_run_t:sock_file { write getattr open read append };
+allow chkpwd_t unconfined_service_t:unix_stream_socket connectto;

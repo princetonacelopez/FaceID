@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+faceidctl - Management CLI for Face ID & Dynamic Island on Fedora Linux
+Usage:
+  faceidctl status
+  faceidctl enroll [--cli]
+  faceidctl test
+  faceidctl demo [success|fail]
+  sudo faceidctl enable
+  sudo faceidctl disable
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+INSTALL_ROOT = Path("/opt/faceid")
+LOCAL_ROOT = Path(__file__).resolve().parent.parent
+PAM_FILES = [
+    Path("/etc/authselect/system-auth"),
+    Path("/etc/authselect/password-auth"),
+]
+PAM_LINE = "auth        sufficient                                   pam_faceid.so"
+DISABLE_FLAG = Path("/etc/faceid/disabled")
+
+
+def get_base_dir() -> Path:
+    if (LOCAL_ROOT / "engine/face_engine.py").exists():
+        return LOCAL_ROOT
+    return INSTALL_ROOT
+
+
+def send_daemon(payload: Dict[str, Any], timeout: float = 7.0) -> Dict[str, Any]:
+    for sock_path in ("/run/faceid/auth.sock", "/tmp/faceid-runtime/auth.sock"):
+        if not os.path.exists(sock_path):
+            continue
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect(sock_path)
+                s.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+                raw = s.recv(65536).decode("utf-8", errors="replace").strip()
+                if raw:
+                    return json.loads(raw)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    return {"ok": False, "error": "faceid-daemon socket not reachable"}
+
+
+def is_pam_enabled() -> Dict[str, bool]:
+    res: Dict[str, bool] = {}
+    for p in PAM_FILES:
+        try:
+            txt = p.read_text(encoding="utf-8") if p.exists() else ""
+            res[p.name] = "pam_faceid.so" in txt
+        except Exception:
+            res[p.name] = False
+    return res
+
+
+def cmd_status() -> int:
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "root"
+    d_res = send_daemon({"cmd": "STATUS", "user": user})
+    pam_state = is_pam_enabled()
+    killswitch = DISABLE_FLAG.exists()
+
+    print("============================================================")
+    print("  Face ID & Dynamic Island Status (Fedora 45)")
+    print("============================================================")
+    print(f"  Target User      : {user}")
+    print(f"  Daemon Reachable : {'YES' if d_res.get('ok') else 'NO (' + str(d_res.get('error')) + ')'}")
+    if d_res.get("ok"):
+        print(f"  ONNX Models      : {'LOADED' if d_res.get('models_loaded') else 'MISSING'}")
+        print(f"  Enrolled Angles  : {d_res.get('enrolled_samples', 0)} sample vectors")
+        cfg = d_res.get("config", {})
+        print(f"  Security Mode    : {cfg.get('security_mode', 'smart')}")
+        print(f"  Mini Camera Ring : {cfg.get('show_mini_camera', True)}")
+    print(f"  Killswitch Flag  : {'DISABLED (/etc/faceid/disabled present)' if killswitch else 'ACTIVE'}")
+    for name, enabled in pam_state.items():
+        print(f"  PAM {name:<13}: {'ENABLED' if enabled else 'DISABLED'}")
+    print("============================================================")
+    return 0
+
+
+def cmd_enable() -> int:
+    if os.geteuid() != 0:
+        print("Error: 'faceidctl enable' must be run with sudo.", file=sys.stderr)
+        return 1
+
+    if DISABLE_FLAG.exists():
+        DISABLE_FLAG.unlink()
+
+    backup_dir = Path("/etc/faceid/pam-backups")
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for p in PAM_FILES:
+        if not p.exists():
+            continue
+        backup_file = backup_dir / f"{p.name}.bak"
+        if not backup_file.exists():
+            shutil.copy2(p, backup_file)
+
+        lines = p.read_text(encoding="utf-8").splitlines()
+        if any("pam_faceid.so" in ln for ln in lines):
+            print(f"[faceidctl] {p} already has pam_faceid.so enabled.")
+            continue
+
+        new_lines: List[str] = []
+        inserted = False
+        for ln in lines:
+            # Insert right after pam_faildelay.so or pam_env.so in the auth block
+            new_lines.append(ln)
+            if not inserted and ln.strip().startswith("auth") and (
+                "pam_faildelay.so" in ln or "pam_env.so" in ln
+            ):
+                # Prefer inserting after pam_faildelay if present, otherwise after pam_env
+                if "pam_faildelay.so" in ln or not any("pam_faildelay.so" in x for x in lines):
+                    new_lines.append(PAM_LINE)
+                    inserted = True
+
+        if not inserted:
+            new_lines.insert(0, PAM_LINE)
+
+        p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        print(f"[faceidctl] Enabled pam_faceid.so in {p}")
+
+    print("[faceidctl] Face ID PAM authentication is now ENABLED for Lock Screen, Sudo, Polkit & GDM.")
+    return 0
+
+
+def cmd_disable() -> int:
+    if os.geteuid() != 0:
+        print("Error: 'faceidctl disable' must be run with sudo.", file=sys.stderr)
+        return 1
+
+    DISABLE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+    DISABLE_FLAG.write_text("disabled\n", encoding="utf-8")
+
+    for p in PAM_FILES:
+        if not p.exists():
+            continue
+        lines = p.read_text(encoding="utf-8").splitlines()
+        filtered = [ln for ln in lines if "pam_faceid.so" not in ln]
+        if len(filtered) != len(lines):
+            p.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+            print(f"[faceidctl] Removed pam_faceid.so from {p}")
+
+    print("[faceidctl] Face ID PAM authentication is now DISABLED (standard password-only mode).")
+    return 0
+
+
+def cmd_enroll_cli() -> int:
+    base = get_base_dir()
+    sys.path.insert(0, str(base / "engine"))
+    from face_engine import FaceIDEngine, load_config
+
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
+    engine = FaceIDEngine(config=load_config())
+    if not engine.load_models():
+        print("Error: ONNX models not loaded.", file=sys.stderr)
+        return 1
+
+    cap = engine.open_camera()
+    if cap is None:
+        print("Error: Could not open /dev/video0.", file=sys.stderr)
+        return 1
+
+    print(f"[Face ID Enrollment] Scanning @{user} from /dev/video0...")
+    print("Look at your webcam and slowly tilt your head slightly left, right, up, and down.")
+    samples: List[Dict[str, Any]] = []
+    target = 20
+    start = time.monotonic()
+
+    try:
+        while len(samples) < target and (time.monotonic() - start) < 25.0:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                time.sleep(0.03)
+                continue
+            obs = engine.analyze_frame(frame)
+            if obs is None or obs.sharpness < 10.0:
+                continue
+            samples.append(
+                {
+                    "vector": [round(float(x), 5) for x in obs.embedding.flatten()],
+                    "yaw": round(obs.yaw, 3),
+                    "pitch": round(obs.pitch, 3),
+                    "sharpness": round(obs.sharpness, 1),
+                }
+            )
+            pct = int((len(samples) / target) * 100)
+            print(f"\r  Captured {len(samples)}/{target} angles ({pct}%)...", end="", flush=True)
+            time.sleep(0.10)
+    finally:
+        cap.release()
+
+    print()
+    if not samples:
+        print("Error: No clear face frames captured.", file=sys.stderr)
+        return 1
+
+    res = send_daemon({"cmd": "SAVE_ENROLLMENT", "user": user, "samples": samples})
+    if not res.get("ok"):
+        saved = engine.save_user_embeddings(user, samples)
+        print(f"✓ Saved {len(samples)} Face ID angles to {saved}")
+    else:
+        print(f"✓ Saved {len(samples)} Face ID angles to {res.get('path')}")
+    send_daemon({"cmd": "DEMO_SUCCESS"})
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    cmd = args[0].lower() if args else "status"
+
+    if cmd == "status":
+        return cmd_status()
+    if cmd == "enable":
+        return cmd_enable()
+    if cmd == "disable":
+        return cmd_disable()
+    if cmd == "test":
+        user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
+        print(f"[faceidctl] Triggering live Face ID authentication for @{user}...")
+        t0 = time.monotonic()
+        res = send_daemon({"cmd": "AUTH", "user": user, "reason": "cli-test"}, timeout=8.0)
+        elapsed = (time.monotonic() - t0) * 1000.0
+        print(f"[faceidctl] Result ({elapsed:.0f} ms): {json.dumps(res, indent=2)}")
+        return 0 if res.get("ok") else 1
+    if cmd == "demo":
+        kind = args[1].lower() if len(args) > 1 else "success"
+        d_cmd = "DEMO_FAIL" if kind.startswith("fail") else "DEMO_SUCCESS"
+        res = send_daemon({"cmd": d_cmd})
+        print(json.dumps(res, indent=2))
+        return 0
+    if cmd == "enroll":
+        if "--cli" in args:
+            return cmd_enroll_cli()
+        base = get_base_dir()
+        setup_py = base / "ui/setup_app.py"
+        return subprocess.call([sys.executable, str(setup_py)])
+
+    print(__doc__.strip())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

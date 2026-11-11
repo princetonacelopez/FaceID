@@ -1,0 +1,71 @@
+.faceid-dynamic-island {
+    background-color: rgba(6, 6, 10, 0.96);
+    border: 1.5px solid rgba(100, 210, 255, 0.55);
+    border-radius: 32px;
+    padding: 10px 20px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+}
+
+.faceid-dynamic-island.state-matched {
+    border-color: rgba(48, 209, 88, 0.85);
+    box-shadow: 0 0 22px rgba(48, 209, 88, 0.35);
+}
+
+.faceid-dynamic-island.state-failed {
+    border-color: rgba(255, 69, 58, 0.85);
+    box-shadow: 0 0 22px rgba(255, 69, 58, 0.35);
+}
+
+.faceid-island-glyph {
+    font-size: 22px;
+    color: #64D2FF;
+    margin-right: 14px;
+}
+
+.state-matched .faceid-island-glyph {
+    color: #30D158;
+}
+
+.state-failed .faceid-island-glyph {
+    color: #FF453A;
+}
+
+.faceid-island-textbox {
+    min-width: 175px;
+}
+
+.faceid-island-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #F5F7FA;
+}
+
+.faceid-island-status {
+    font-size: 11px;
+    color: #A6B0C0;
+}
+
+.state-matched .faceid-island-status {
+    color: #30D158;
+    font-weight: 600;
+}
+
+.state-failed .faceid-island-status {
+    color: #FF453A;
+    font-weight: 600;
+}
+
+.faceid-island-badge {
+    font-size: 18px;
+    font-weight: 700;
+    color: #64D2FF;
+    margin-left: 12px;
+}
+
+.state-matched .faceid-island-badge {
+    color: #30D158;
+}
+
+.state-failed .faceid-island-badge {
+    color: #FF453A;
+}
