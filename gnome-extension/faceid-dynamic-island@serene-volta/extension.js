@@ -9,7 +9,7 @@ export default class FaceIDDynamicIslandExtension extends Extension {
     enable() {
         this._pill = new St.BoxLayout({
             style_class: 'faceid-dynamic-island',
-            vertical: false,
+            orientation: Clutter.Orientation.HORIZONTAL,
             reactive: false,
             visible: false,
             opacity: 0,
@@ -17,13 +17,13 @@ export default class FaceIDDynamicIslandExtension extends Extension {
 
         this._iconLabel = new St.Label({
             style_class: 'faceid-island-glyph',
-            text: '􀎽',
+            text: '⛶',
             y_align: Clutter.ActorAlign.CENTER,
         });
 
         this._textBox = new St.BoxLayout({
             style_class: 'faceid-island-textbox',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             y_align: Clutter.ActorAlign.CENTER,
         });
 

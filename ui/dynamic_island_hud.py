@@ -86,6 +86,7 @@ class DynamicIslandOverlay(Gtk.Window):
         self.phase = 0.0
         self.state_enter_ts = time.monotonic()
         self.last_tick_ts = time.monotonic()
+        self._was_drawn_idle = True
 
         self.connect("realize", self._on_realize)
         self.position_on_primary_monitor()
@@ -157,6 +158,14 @@ class DynamicIslandOverlay(Gtk.Window):
         return True
 
     def on_tick(self) -> bool:
+        # Skip 60fps redraws when completely collapsed & idle
+        if self.target_scale == 0.0 and self.pill_scale == 0.0 and self.pill_velocity == 0.0:
+            if not self._was_drawn_idle:
+                self._was_drawn_idle = True
+                self.drawing_area.queue_draw()
+            return True
+
+        self._was_drawn_idle = False
         now = time.monotonic()
         dt = min(0.05, max(0.005, now - self.last_tick_ts))
         self.last_tick_ts = now
@@ -491,72 +500,71 @@ def start_fallback_socket_relay() -> None:
 
 def start_lockscreen_watcher() -> None:
     """
-    Watch org.gnome.ScreenSaver lock state. When the screen is locked (after a
-    2.5s grace period so you can walk away), automatically trigger Face ID and
-    unlock the session via faceid-daemon (loginctl unlock-sessions) even if the
-    GNOME password box or clock shield is showing.
+    Listen for org.gnome.ScreenSaver WakeUpScreen D-Bus signals so Face ID
+    triggers on demand when the user wakes the lock screen (never polling
+    the webcam continuously while the user is away from their desk).
     """
     user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    auth_in_flight = threading.Lock()
+    last_trigger = [0.0]
 
-    def _is_screen_locked() -> bool:
+    def _trigger_auth() -> None:
+        now = time.monotonic()
+        if (now - last_trigger[0]) < 3.0 or not auth_in_flight.acquire(blocking=False):
+            return
+        last_trigger[0] = now
         try:
-            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            res = bus.call_sync(
-                "org.gnome.ScreenSaver",
-                "/org/gnome/ScreenSaver",
-                "org.gnome.ScreenSaver",
-                "GetActive",
-                None,
-                GLib.VariantType.new("(b)"),
-                Gio.DBusCallFlags.NONE,
-                1000,
-                None,
-            )
-            return bool(res.unpack()[0])
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(6.0)
+                s.connect("/run/faceid/auth.sock")
+                req = json.dumps(
+                    {"cmd": "AUTH", "user": user, "reason": "lockscreen"}
+                ) + "\n"
+                s.sendall(req.encode("utf-8"))
+                s.recv(4096)
         except Exception:
-            return False
+            pass
+        finally:
+            auth_in_flight.release()
 
-    def _watch_loop() -> None:
-        was_locked = False
-        locked_since = 0.0
-        last_attempt = 0.0
+    def _on_signal(
+        _conn: Gio.DBusConnection,
+        _sender: str,
+        _path: str,
+        _iface: str,
+        signal_name: str,
+        _params: GLib.Variant,
+    ) -> None:
+        if signal_name == "WakeUpScreen":
+            threading.Thread(target=_trigger_auth, daemon=True).start()
 
-        while True:
-            time.sleep(0.45)
-            locked = _is_screen_locked()
-            now = time.monotonic()
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.signal_subscribe(
+            "org.gnome.ScreenSaver",
+            "org.gnome.ScreenSaver",
+            "WakeUpScreen",
+            "/org/gnome/ScreenSaver",
+            None,
+            Gio.DBusSignalFlags.NONE,
+            _on_signal,
+        )
+    except Exception:
+        pass
 
-            if locked and not was_locked:
-                was_locked = True
-                locked_since = now
-                continue
-            elif not locked:
-                was_locked = False
-                continue
 
-            # Screen is currently locked: wait 2.5s grace period after locking
-            if (now - locked_since) < 2.5:
-                continue
-            if (now - last_attempt) < 2.0:
-                continue
-
-            last_attempt = now
-            try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                    s.settimeout(6.0)
-                    s.connect("/run/faceid/auth.sock")
-                    req = json.dumps(
-                        {"cmd": "AUTH", "user": user, "reason": "lockscreen"}
-                    ) + "\n"
-                    s.sendall(req.encode("utf-8"))
-                    s.recv(4096)
-            except Exception:
-                pass
-
-    threading.Thread(target=_watch_loop, daemon=True).start()
+def _wait_for_display(timeout_sec: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        ok, _ = Gtk.init_check(sys.argv)
+        if ok:
+            return
+        time.sleep(0.5)
 
 
 def main() -> None:
+    _wait_for_display()
+
     try:
         Path("/tmp/faceid-gtk-hud.pid").write_text(str(os.getpid()), encoding="utf-8")
     except Exception:
